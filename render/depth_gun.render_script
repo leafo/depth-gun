@@ -1,0 +1,100 @@
+-- depth-gun render pipeline:
+-- 1. Render world predicates ("world", "world_add") into a 320×240 RGBA render target
+--    with NEAREST filtering. "world_add" pass uses additive blend.
+-- 2. Blit the render target to the screen at 3× via a fullscreen quad tagged "upscale".
+-- 3. Draw GUI on top (for HUD / fade overlay / tutorial text reveal).
+
+local INTERNAL_W = 320
+local INTERNAL_H = 240
+
+local function init_state(self)
+    self.world_pred     = render.predicate({ "world" })
+    self.world_add_pred = render.predicate({ "world_add" })
+    self.upscale_pred   = render.predicate({ "upscale" })
+    self.gui_pred       = render.predicate({ "gui" })
+    self.text_pred      = render.predicate({ "text" })
+    self.particle_pred  = render.predicate({ "particle" })
+
+    local color_params = {
+        format     = render.FORMAT_RGBA,
+        width      = INTERNAL_W,
+        height     = INTERNAL_H,
+        min_filter = render.FILTER_NEAREST,
+        mag_filter = render.FILTER_NEAREST,
+        u_wrap     = render.WRAP_CLAMP_TO_EDGE,
+        v_wrap     = render.WRAP_CLAMP_TO_EDGE,
+    }
+    self.world_rt = render.render_target("world_rt", { [render.BUFFER_COLOR_BIT] = color_params })
+
+    self.clear_color = vmath.vector4(0.0, 0.0, 0.0, 1.0)
+
+    -- Standard +Y-up world projection. Sprite UVs are OpenGL-convention
+    -- (UV (0,0) = bottom-left of texture), so a Y-flipped ortho would render
+    -- textures upside down. project() in game_space.lua flips Y at its output
+    -- boundary so source code can keep its +Y-down conventions.
+    -- Wide near/far so paint-order GO z values up to ~30 don't get clipped.
+    self.world_view = vmath.matrix4()
+    self.world_proj = vmath.matrix4_orthographic(0, INTERNAL_W, 0, INTERNAL_H, -100, 100)
+end
+
+function init(self)
+    init_state(self)
+end
+
+function update(self)
+    -- Framebuffer size (physical pixels — used for the viewport).
+    local fb_w = render.get_window_width()
+    local fb_h = render.get_window_height()
+    -- Logical size (game.project [display] — used for the projection so
+    -- GO positions stay resolution-independent, even under HiDPI).
+    local logical_w = render.get_width()
+    local logical_h = render.get_height()
+    if fb_w == 0 or fb_h == 0 then return end
+
+    -- Pass 1: world (alpha) + world_add (additive) into 320×240 render target
+    render.set_depth_mask(false)
+    render.disable_state(render.STATE_DEPTH_TEST)
+    render.disable_state(render.STATE_STENCIL_TEST)
+    render.disable_state(render.STATE_CULL_FACE)
+    render.enable_state(render.STATE_BLEND)
+
+    render.enable_render_target(self.world_rt)
+    render.set_viewport(0, 0, INTERNAL_W, INTERNAL_H)
+    render.clear({
+        [render.BUFFER_COLOR_BIT]   = self.clear_color,
+        [render.BUFFER_DEPTH_BIT]   = 1,
+        [render.BUFFER_STENCIL_BIT] = 0,
+    })
+    render.set_view(self.world_view)
+    render.set_projection(self.world_proj)
+
+    render.set_blend_func(render.BLEND_SRC_ALPHA, render.BLEND_ONE_MINUS_SRC_ALPHA)
+    render.draw(self.world_pred)
+
+    render.set_blend_func(render.BLEND_SRC_ALPHA, render.BLEND_ONE)
+    render.draw(self.world_add_pred)
+
+    render.disable_render_target(self.world_rt)
+
+    -- Pass 2: blit the render target to the full screen via the upscale quad
+    render.set_viewport(0, 0, fb_w, fb_h)
+    render.set_view(vmath.matrix4())
+    render.set_projection(vmath.matrix4_orthographic(0, logical_w, 0, logical_h, -1, 1))
+    render.set_blend_func(render.BLEND_SRC_ALPHA, render.BLEND_ONE_MINUS_SRC_ALPHA)
+    -- Bind the world RT to the "world_sampler" by name — this overrides any
+    -- per-component texture binding for that named sampler.
+    render.enable_texture("world_sampler", self.world_rt, render.BUFFER_COLOR_BIT)
+    render.draw(self.upscale_pred)
+    render.disable_texture("world_sampler")
+
+    -- Pass 3: GUI on top (HUD, fades, tutorial reveal)
+    render.set_view(vmath.matrix4())
+    render.set_projection(vmath.matrix4_orthographic(0, logical_w, 0, logical_h, -1, 1))
+    render.draw(self.gui_pred)
+end
+
+function on_message(self, message_id, message)
+    if message_id == hash("clear_color") then
+        self.clear_color = message.color
+    end
+end

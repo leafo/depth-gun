@@ -1,0 +1,13 @@
+script: "/render/depth_gun.render_script"
+materials {
+  name: "world"
+  material: "/materials/sprite_world.material"
+}
+materials {
+  name: "world_add"
+  material: "/materials/sprite_add.material"
+}
+materials {
+  name: "upscale"
+  material: "/materials/upscale.material"
+}

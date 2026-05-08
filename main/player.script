@@ -1,0 +1,184 @@
+-- Player ship.
+--
+-- Idiomatic Defold input: this script acquires its own input focus and
+-- handles `on_input` directly. Held-state for movement axes is tracked in
+-- self.holding_*; tap-style actions (shoot, missile fire) are handled
+-- on the press/release event itself.
+--
+-- State is in space-coords (origin at world center). Each frame:
+--   1. Build movement vector from held flags → update aim_pos (clamped).
+--   2. Smooth-approach world position → derive velocity for banking.
+--   3. Write space.rot, space.xtilt, space.ytilt (banking feedback).
+--   4. For each ghost-trail frame, project player world (x, y, frame_z)
+--      and place that frame's GO at the projected screen coords.
+
+local Vec2d = require("lovekit.geometry").Vec2d
+local Box   = require("lovekit.geometry").Box
+
+local AIM_SPEED   = 200
+local APPROACH_K  = 5
+local MAX_ROT     = 120
+local PLAYER_Z    = -0.1
+local HUD_Z       = 0.3
+
+-- URLs for sibling GOs that the player controls (placed in main.collection)
+local CURSOR_URL    = msg.url("main:/cursor")
+local CURSOR_SPRITE = msg.url("main:/cursor#sprite")
+local AIM_BOX_URL   = msg.url("main:/aim_box")
+local AIM_BOX_PARTS = {
+    msg.url("main:/aim_box#top"),
+    msg.url("main:/aim_box#bottom"),
+    msg.url("main:/aim_box#left"),
+    msg.url("main:/aim_box#right"),
+}
+
+-- Ghost-trail frame depths (relative to PLAYER_Z).
+local FRAME_DEPTHS = {
+    [1] = -0.02 - 0.05,
+    [2] = -0.02,
+    [3] =  0.00,
+    [4] =  0.02,
+}
+local FRAME_ANIMS = { "player_0", "player_1", "player_2", "player_3" }
+
+-- Action id hashes (computed once at file load).
+local A_LEFT  = hash("left")
+local A_RIGHT = hash("right")
+local A_UP    = hash("up")
+local A_DOWN  = hash("down")
+local A_ONE   = hash("one")
+local A_TWO   = hash("two")
+
+local function clamp(v, lo, hi)
+    if v < lo then return lo end
+    if v > hi then return hi end
+    return v
+end
+
+local function get_rotation(vel_x)
+    local p = clamp(vel_x, -MAX_ROT, MAX_ROT) / MAX_ROT
+    local sign = (p == 0) and 1 or (p / math.abs(p))
+    p = sign * (math.abs(p) ^ 2)
+    return p * math.pi / 24
+end
+
+function init(self)
+    msg.post(".", "acquire_input_focus")
+
+    self.time = 0
+    self.x, self.y = 0, 0
+    self.aim_x, self.aim_y = 0, 0
+    self.vel_x, self.vel_y = 0, 0
+
+    self.holding_left  = false
+    self.holding_right = false
+    self.holding_up    = false
+    self.holding_down  = false
+    self.locking       = false
+
+    -- Spawn 4 ghost-trail frames.
+    self.frames = {}
+    for i = 1, 4 do
+        local id = factory.create("#frame_factory")
+        sprite.play_flipbook(msg.url(nil, id, "body_l"), hash(FRAME_ANIMS[i]))
+        sprite.play_flipbook(msg.url(nil, id, "body_r"), hash(FRAME_ANIMS[i] .. "_flipped"))
+        self.frames[i] = id
+    end
+end
+
+local function shoot(self)
+    if WORLD and WORLD.spawn_bullet then
+        WORLD.spawn_bullet(self.x, self.y, PLAYER_Z)
+        AUDIO:play("shoot")
+    end
+end
+
+function on_input(self, action_id, action)
+    if action.pressed then
+        if action_id == A_LEFT  then self.holding_left  = true
+        elseif action_id == A_RIGHT then self.holding_right = true
+        elseif action_id == A_UP    then self.holding_up    = true
+        elseif action_id == A_DOWN  then self.holding_down  = true
+        elseif action_id == A_ONE   then shoot(self)
+        elseif action_id == A_TWO   then self.locking      = true
+        end
+    elseif action.released then
+        if action_id == A_LEFT  then self.holding_left  = false
+        elseif action_id == A_RIGHT then self.holding_right = false
+        elseif action_id == A_UP    then self.holding_up    = false
+        elseif action_id == A_DOWN  then self.holding_down  = false
+        elseif action_id == A_TWO   then self.locking      = false
+            -- M8: fire_lock_ons(self) on release
+        end
+    end
+end
+
+function update(self, dt)
+    if not WORLD then return end
+    self.time = self.time + dt
+    local space = WORLD.space
+
+    -- Movement vector from held flags.
+    local mvx, mvy = 0, 0
+    if self.holding_left  then mvx = mvx - 1 end
+    if self.holding_right then mvx = mvx + 1 end
+    if self.holding_up    then mvy = mvy - 1 end
+    if self.holding_down  then mvy = mvy + 1 end
+
+    -- Unproject by world rotation so input direction is consistent regardless
+    -- of banking, then advance aim_pos in space-coords.
+    local umx, umy = space:unproject_rot(mvx, mvy)
+    self.aim_x = self.aim_x + umx * AIM_SPEED * dt
+    self.aim_y = self.aim_y + umy * AIM_SPEED * dt
+
+    -- Clamp aim_pos to space.aim_box.
+    local box = space.aim_box
+    self.aim_x = clamp(self.aim_x, box.x, box.x + box.w)
+    self.aim_y = clamp(self.aim_y, box.y, box.y + box.h)
+
+    -- Smooth-approach world position toward aim_pos.
+    local prev_x, prev_y = self.x, self.y
+    self.x = smooth_approach(prev_x, self.aim_x, dt * APPROACH_K)
+    self.y = smooth_approach(prev_y, self.aim_y, dt * APPROACH_K)
+    self.vel_x = (self.x - prev_x) / dt
+    self.vel_y = (self.y - prev_y) / dt
+
+    -- Banking feedback into space.
+    space.rot   = get_rotation(self.vel_x)
+    space.xtilt = -(self.x / (space.viewport.w * 0.5))
+    space.ytilt = -(self.y / (space.viewport.h * 0.5)) * 2
+
+    -- Place each ghost-trail frame.
+    local extra_rot = get_rotation(self.vel_x) * 2 - space.world_rot
+    for i = 1, 4 do
+        local fz = PLAYER_Z + FRAME_DEPTHS[i]
+        local px, py, scale, rot = space:project(self.x, self.y, fz)
+        local id = self.frames[i]
+        local paint_z = 25 - i
+        go.set_position(vmath.vector3(px, py, paint_z), id)
+        go.set_rotation(vmath.quat_rotation_z(-(rot + extra_rot)), id)
+        go.set_scale(scale, id)
+    end
+
+    -- Cursor (crosshair) — follows aim_pos in space-coords.
+    local cx, cy = space:project(self.aim_x, self.aim_y, HUD_Z)
+    go.set_position(vmath.vector3(cx, cy, 25), CURSOR_URL)
+
+    -- Aim-box outline at a pulsing depth. Source: z = pop_in(t, 2.0) / 4
+    -- with alpha (1 - t) * 128 / 255 ≈ 0..0.5 fade. Creates the rhythmic
+    -- "the box appears, slides in toward camera, fades out" pulse.
+    local offset = space.offset
+    local t = offset - math.floor(offset)
+    local box_z = pop_in(t, 2.0) / 4
+    local bx, by, bscale = space:project(0, 0, box_z)
+    local brot = space.rot + space.world_rot
+    go.set_position(vmath.vector3(bx, by, 24), AIM_BOX_URL)
+    go.set_rotation(vmath.quat_rotation_z(-brot), AIM_BOX_URL)
+    go.set_scale(bscale, AIM_BOX_URL)
+    -- Alpha fade across the four edge sprites
+    local alpha = (1 - t) * 0.5
+    local tint = vmath.vector4(1, 1, 1, alpha)
+    for _, part_url in ipairs(AIM_BOX_PARTS) do
+        go.set(part_url, "tint", tint)
+    end
+end

@@ -1,0 +1,4 @@
+sound: "/sounds/notarget.wav"
+looping: 0
+group: "master"
+gain: 1.0

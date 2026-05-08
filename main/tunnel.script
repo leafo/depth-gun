@@ -1,0 +1,64 @@
+-- Spawns 21 tunnel-layer sprites at init and per-frame projects each from
+-- world-space z to screen-space (x, y, scale, rotation). Reads world.space.
+-- Mirrors the source tunnel.lua's draw loop:
+--
+--   for z = 10, 0, -0.5 do
+--     local zz = z - offset_frac
+--     space:draw_at_z(zz, function()
+--       g.translate((noise(zz) - 0.5) * 40, 0)
+--       bg:draw(-w/2, -h/2)
+--     end)
+--   end
+
+local perlin = require("main.scripts.perlin")
+local world_module = require("main.scripts.world")
+
+local LAYER_COUNT = 21
+local Z_START     = 10
+local Z_STEP      = 0.5
+local NOISE_SCALE = 40
+
+function init(self)
+    if not _G.WORLD then
+        _G.WORLD = world_module.create()
+    end
+
+    self.layers = {}        -- list of GO id hashes
+    self.sprite_urls = {}   -- list of msg.url to each layer's sprite component
+    for i = 1, LAYER_COUNT do
+        local id = factory.create("#factory")
+        self.layers[i] = id
+        self.sprite_urls[i] = msg.url(nil, id, "sprite")
+    end
+end
+
+function update(self, dt)
+    local space = _G.WORLD.space
+    space:update(dt)
+
+    local offset_frac = space.offset - math.floor(space.offset)
+    -- project() returns rot in source's +Y-down convention (positive=CW).
+    -- We negate once when applying as a Defold +Y-up quaternion.
+    local rot = space.rot + space.world_rot
+    local q = vmath.quat_rotation_z(-rot)
+
+    for i = 0, LAYER_COUNT - 1 do
+        local id = self.layers[i + 1]
+        local sprite_url = self.sprite_urls[i + 1]
+        local raw_z = Z_START - i * Z_STEP
+        local z = raw_z - offset_frac
+        if z > -1 then
+            local nx = (perlin.noise(z) - 0.5) * NOISE_SCALE
+            local px, py, scale = space:project(nx, 0, z)
+
+            -- paint order: i=0 is z=10 (farthest, drawn first); i=20 is z=0 (nearest, drawn last).
+            -- bigger GO z renders later, so set GO z = i.
+            go.set_position(vmath.vector3(px, py, i), id)
+            go.set_rotation(q, id)
+            go.set_scale(scale, id)
+
+            local cscale = math.min(1, scale)
+            go.set(sprite_url, "tint", vmath.vector4(cscale, cscale, cscale, 1))
+        end
+    end
+end

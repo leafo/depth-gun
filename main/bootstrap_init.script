@@ -1,0 +1,22 @@
+-- Runs FIRST in the collection. Sets up globals (AUDIO, WORLD, etc.) before
+-- any other script's init runs. Input is now handled per-script by whichever
+-- script needs it (player.script, future wave/title scripts) — this script
+-- no longer manages input.
+
+require("lovekit.all")
+
+function init(self)
+    math.randomseed(os.time())
+
+    _G.GAME_CONFIG = {
+        viewport_width = 320,
+        viewport_height = 240,
+        scale = 3,
+    }
+    _G.DEBUG = false
+    _G.DID_TUTORIAL = false
+    _G.AUDIO = Audio()
+
+    local world_module = require("main.scripts.world")
+    _G.WORLD = world_module.create()
+end

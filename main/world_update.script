@@ -1,0 +1,319 @@
+-- World update — owns the per-frame entity loop:
+--   1. Update each entity's state (kinematics, AI ticks).
+--   2. Build a UniformGrid of all entities and run collisions.
+--   3. Project each entity's (x, y, z) → screen and write to its GO.
+--   4. Despawn entities flagged !alive.
+--
+-- Entities are plain Lua tables stored in WORLD.entities. The per-entity GO
+-- has only sprite components (no scripts) — all logic lives here.
+
+local Box = require("lovekit.geometry").Box
+local UniformGrid = require("lovekit.geometry").UniformGrid
+
+local SPAWN_INTERVAL = 1.5
+local ENEMY_DEFAULT_HEALTH = 3
+local FLASH_DURATION = 0.15
+
+-- A single pooled UniformGrid, cleared per-frame.
+local _grid = UniformGrid(20)
+
+-- ---------------------------------------------------------------------------
+-- Particle spawning
+-- ---------------------------------------------------------------------------
+
+local function spawn_particle(self, opts)
+    local id = factory.create(self.particles_factory)
+    local p = {
+        id          = id,
+        kind        = "particle",
+        is_particle = true,
+        x           = opts.x or 0,
+        y           = opts.y or 0,
+        z           = opts.z or 0,
+        vx          = opts.vx or 0,
+        vy          = opts.vy or 0,
+        vz          = opts.vz or 0,
+        ax          = opts.ax or 0,
+        ay          = opts.ay or 0,
+        az          = opts.az or 0,
+        life        = opts.life or 0.5,
+        max_life    = opts.life or 0.5,
+        ad_left     = opts.ad_left or 0,
+        ad_right    = opts.ad_right or 1,
+        scale       = opts.scale or 1,
+        dscale      = opts.dscale or 0,
+        rot         = opts.rot or 0,
+        spin        = opts.spin or 0,
+        alpha       = opts.alpha or 1,
+        tint_r      = opts.tint_r or 1,
+        tint_g      = opts.tint_g or 1,
+        tint_b      = opts.tint_b or 1,
+        alive       = true,
+    }
+
+    if opts.sprite_anim then
+        sprite.play_flipbook(msg.url(nil, id, "sprite"), hash(opts.sprite_anim))
+    end
+
+    function p.update(self_p, dt, world)
+        self_p.life = self_p.life - dt
+        if self_p.life <= 0 then
+            self_p.alive = false
+            return false
+        end
+        self_p.vx = self_p.vx + self_p.ax * dt
+        self_p.vy = self_p.vy + self_p.ay * dt
+        self_p.vz = self_p.vz + self_p.az * dt
+        self_p.x  = self_p.x  + self_p.vx * dt
+        self_p.y  = self_p.y  + self_p.vy * dt
+        self_p.z  = self_p.z  + self_p.vz * dt
+        self_p.scale = self_p.scale * (1 + self_p.dscale * dt)
+        self_p.rot   = self_p.rot   + self_p.spin * dt
+        return true
+    end
+
+    WORLD.entities[#WORLD.entities + 1] = p
+    return p
+end
+
+-- Source's Explosion: 0.1s burst of 20 particles. 1 Flame + mix of Sparks/Smokes.
+-- (All additive — source wraps the entire particles draw in setBlendMode("add").)
+local function spawn_explosion(self, x, y, z)
+    local rand = math.random
+
+    -- Flame: bright red flash, fast shrink
+    spawn_particle(self, {
+        x = x, y = y, z = z,
+        vx = 0, vy = 0, vz = -2,
+        life = 0.18,
+        scale = 1.6, dscale = -3,
+        sprite_anim = "spark",
+        tint_r = 1.0, tint_g = 0.4, tint_b = 0.3,
+        alpha = 1,
+    })
+
+    -- 11 sparks
+    for _ = 1, 11 do
+        local angle = rand() * math.pi * 2
+        local speed = 80 + rand() * 60
+        spawn_particle(self, {
+            x = x, y = y, z = z,
+            vx = math.cos(angle) * speed,
+            vy = math.sin(angle) * speed,
+            vz = -1 - rand() * 2,
+            ay = -200,            -- gravity (note: +Y up world)
+            life = 0.3 + rand() * 0.3,
+            scale = 1, dscale = -0.4,
+            spin = (rand() - 0.5) * 8,
+            sprite_anim = (rand() < 0.5) and "spark" or "spark2",
+            tint_r = 1.0, tint_g = 0.8, tint_b = 0.5,
+            alpha = 1, ad_right = 0.7,
+        })
+    end
+
+    -- 8 smokes — slower, grow as they fade
+    for _ = 1, 8 do
+        local angle = rand() * math.pi * 2
+        local speed = 20 + rand() * 30
+        spawn_particle(self, {
+            x = x, y = y, z = z,
+            vx = math.cos(angle) * speed,
+            vy = math.sin(angle) * speed,
+            vz = -1,
+            ay = 50,              -- floats up in +Y up
+            life = 0.5,
+            scale = 1, dscale = 0.6,
+            spin = (rand() - 0.5) * 2,
+            sprite_anim = (rand() < 0.5) and "smoke" or "smoke_2",
+            tint_r = 0.6, tint_g = 0.5, tint_b = 0.4,
+            alpha = 0.8, ad_left = 0.1, ad_right = 0.6,
+        })
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Entity factories
+-- ---------------------------------------------------------------------------
+
+local function spawn_enemy(self, x, y)
+    local id = factory.create(self.enemies_factory)
+    local body_l_url = msg.url(nil, id, "body_l")
+    local body_r_url = msg.url(nil, id, "body_r")
+
+    local e = {
+        id          = id,
+        body_l_url  = body_l_url,
+        body_r_url  = body_r_url,
+        kind        = "enemy",
+        is_enemy    = true,
+        x           = x,
+        y           = y,
+        z           = 2.0,
+        w           = 12,
+        h           = 8,
+        alive       = true,
+        dying       = false,
+        health      = ENEMY_DEFAULT_HEALTH,
+        flash_time  = 0,
+    }
+
+    function e.update(self_e, dt, world)
+        if self_e.flash_time > 0 then
+            self_e.flash_time = self_e.flash_time - dt
+        end
+        return self_e.alive
+    end
+
+    function e.on_hit_by(self_e, bullet, world)
+        if self_e.dying or not self_e.alive then return end
+        if math.abs(self_e.z - bullet.z) >= 0.1 then return end
+
+        bullet.alive = false
+        self_e.health = self_e.health - bullet.damage
+        self_e.flash_time = FLASH_DURATION
+        AUDIO:play("enemy_hit")
+        if self_e.health <= 0 then
+            self_e.dying = true
+            self_e.alive = false
+            AUDIO:play("explode")
+            world.score = world.score + 7 * world.score_mult
+            spawn_explosion(self, self_e.x, self_e.y, self_e.z)
+        end
+    end
+
+    WORLD.entities[#WORLD.entities + 1] = e
+    return e
+end
+
+local function spawn_bullet(self, x, y, z)
+    local id = factory.create(self.bullets_factory)
+
+    local b = {
+        id        = id,
+        kind      = "bullet",
+        is_bullet = true,
+        x         = x,
+        y         = y,
+        z         = z,
+        w         = 5,
+        h         = 5,
+        alive     = true,
+        damage    = 1,
+        speed     = 2,
+    }
+
+    function b.update(self_b, dt, world)
+        self_b.z = self_b.z + dt * self_b.speed
+        if self_b.z >= 3 then self_b.alive = false end
+        return self_b.alive
+    end
+
+    WORLD.entities[#WORLD.entities + 1] = b
+    return b
+end
+
+-- ---------------------------------------------------------------------------
+-- Lifecycle
+-- ---------------------------------------------------------------------------
+
+function init(self)
+    self.spawn_timer = 0
+    self.bullets_factory   = msg.url("#bullets")
+    self.enemies_factory   = msg.url("#enemies")
+    self.particles_factory = msg.url("#particles")
+    WORLD.spawn_enemy    = function(x, y)    return spawn_enemy(self, x, y) end
+    WORLD.spawn_bullet   = function(x, y, z) return spawn_bullet(self, x, y, z) end
+    WORLD.spawn_explosion = function(x, y, z) return spawn_explosion(self, x, y, z) end
+end
+
+local function update_entity_transform(e, space)
+    if e.is_bullet then
+        local px, py, scale = space:project(e.x, e.y, e.z)
+        go.set_position(vmath.vector3(px, py, 23), e.id)
+        go.set_scale(scale, e.id)
+
+    elseif e.is_enemy then
+        local px, py, scale, rot = space:project(e.x, e.y, e.z)
+        go.set_position(vmath.vector3(px, py, 22), e.id)
+        go.set_scale(scale, e.id)
+        go.set_rotation(vmath.quat_rotation_z(-rot), e.id)
+        local tint
+        if e.flash_time > 0 then
+            tint = vmath.vector4(1.5, 0.4, 0.4, 1)
+        else
+            tint = vmath.vector4(1, 1, 1, 1)
+        end
+        go.set(e.body_l_url, "tint", tint)
+        go.set(e.body_r_url, "tint", tint)
+
+    elseif e.is_particle then
+        local px, py, scale = space:project(e.x, e.y, e.z)
+        go.set_position(vmath.vector3(px, py, 23.5), e.id)
+        go.set_scale(scale * e.scale, e.id)
+        go.set_rotation(vmath.quat_rotation_z(e.rot), e.id)
+        local p = 1 - (e.life / e.max_life)
+        local a = ad_curve(p, 0, e.ad_left, e.ad_right) * e.alpha
+        go.set(msg.url(nil, e.id, "sprite"), "tint",
+            vmath.vector4(e.tint_r, e.tint_g, e.tint_b, a))
+    end
+end
+
+local function despawn(e)
+    if e.id then go.delete(e.id) end
+end
+
+function update(self, dt)
+    if not WORLD then return end
+    local space = WORLD.space
+    if not space then return end
+
+    -- 1. Always-on dummy enemy spawner (M6 stub)
+    self.spawn_timer = self.spawn_timer - dt
+    if self.spawn_timer <= 0 then
+        self.spawn_timer = SPAWN_INTERVAL
+        local x = math.random() * 200 - 100
+        local y = math.random() * 120 - 60
+        spawn_enemy(self, x, y)
+    end
+
+    -- 2. Update entity state, prune dead
+    local entities = WORLD.entities
+    local i = 1
+    while i <= #entities do
+        local e = entities[i]
+        local alive = e.update(e, dt, WORLD)
+        if not alive then
+            despawn(e)
+            table.remove(entities, i)
+        else
+            i = i + 1
+        end
+    end
+
+    -- 3. Collision: build grid of enemies, scan bullets
+    _grid:clear()
+    for _, e in ipairs(entities) do
+        if e.is_enemy and e.alive then
+            local box = Box(e.x - e.w / 2, e.y - e.h / 2, e.w, e.h)
+            _grid:add(box, e)
+        end
+    end
+    for _, b in ipairs(entities) do
+        if b.is_bullet and b.alive then
+            local bbox = Box(b.x - b.w / 2, b.y - b.h / 2, b.w, b.h)
+            local hits = _grid:get_touching(bbox)
+            for j = 1, #hits do
+                local target = hits[j]
+                if target and target.on_hit_by then
+                    target:on_hit_by(b, WORLD)
+                    if not b.alive then break end
+                end
+            end
+        end
+    end
+
+    -- 4. Sync GO transforms
+    for _, e in ipairs(entities) do
+        update_entity_transform(e, space)
+    end
+end

@@ -1,0 +1,29 @@
+[bootstrap]
+main_collection = /main/main.collectionc
+render = /render/depth_gun.renderc
+
+[script]
+shared_state = 1
+
+[display]
+width = 960
+height = 720
+high_dpi = 0
+
+[graphics]
+default_texture_min_filter = nearest
+default_texture_mag_filter = nearest
+
+[android]
+input_method = HiddenInputField
+
+[physics]
+gravity_y = -1000.0
+scale = 0.01
+
+[html5]
+scale_mode = stretch
+
+[project]
+title = depth-gun
+
