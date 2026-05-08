@@ -1,17 +1,8 @@
 -- Spawns 21 tunnel-layer sprites at init and per-frame projects each from
 -- world-space z to screen-space (x, y, scale, rotation). Reads world.space.
--- Mirrors the source tunnel.lua's draw loop:
---
---   for z = 10, 0, -0.5 do
---     local zz = z - offset_frac
---     space:draw_at_z(zz, function()
---       g.translate((noise(zz) - 0.5) * 40, 0)
---       bg:draw(-w/2, -h/2)
---     end)
---   end
 
 local perlin = require("main.scripts.perlin")
-local world_module = require("main.scripts.world")
+local game_state = require("main.scripts.game_state")
 
 local LAYER_COUNT = 21
 local Z_START     = 10
@@ -19,21 +10,30 @@ local Z_STEP      = 0.5
 local NOISE_SCALE = 40
 
 function init(self)
-    if not _G.WORLD then
-        _G.WORLD = world_module.create()
-    end
-
-    self.layers = {}        -- list of GO id hashes
-    self.sprite_urls = {}   -- list of msg.url to each layer's sprite component
+    self.layers = {}
+    self.sprite_urls = {}
     for i = 1, LAYER_COUNT do
         local id = factory.create("#factory")
         self.layers[i] = id
         self.sprite_urls[i] = msg.url(nil, id, "sprite")
     end
+
+    -- Expose a world-level setter so wave bodies can switch the tunnel
+    -- background. (Instant switch for now; the source has a smooth fade
+    -- via space.offset queue — that's a polish item.)
+    local world = game_state.get_world()
+    world.tunnel_set_bg = function(name)
+        local anim = hash(name)
+        for j = 1, #self.sprite_urls do
+            sprite.play_flipbook(self.sprite_urls[j], anim)
+        end
+    end
 end
 
 function update(self, dt)
-    local space = _G.WORLD.space
+    local world = game_state.get_world()
+    if not world then return end
+    local space = world.space
     space:update(dt)
 
     local offset_frac = space.offset - math.floor(space.offset)
@@ -52,7 +52,6 @@ function update(self, dt)
             local px, py, scale = space:project(nx, 0, z)
 
             -- paint order: i=0 is z=10 (farthest, drawn first); i=20 is z=0 (nearest, drawn last).
-            -- bigger GO z renders later, so set GO z = i.
             go.set_position(vmath.vector3(px, py, i), id)
             go.set_rotation(q, id)
             go.set_scale(scale, id)

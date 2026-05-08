@@ -11,6 +11,10 @@ components {
   component: "/main/particle.factory"
 }
 components {
+  id: "missiles"
+  component: "/main/missile.factory"
+}
+components {
   id: "script"
   component: "/main/world_update.script"
 }

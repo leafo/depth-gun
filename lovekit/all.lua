@@ -5,7 +5,6 @@
 local support  = require("lovekit.support")
 local geometry = require("lovekit.geometry")
 local sequence = require("lovekit.sequence")
-local audio    = require("lovekit.audio")
 
 local M = {}
 
@@ -19,7 +18,6 @@ end
 expose(support)
 expose(geometry)
 expose(sequence)
-expose(audio)
 
 -- Inject Sequence DSL helpers (wait/tween/parallel/wait_until/...) as bare
 -- globals so non-Sequence code can also call them. (Sequence functions get

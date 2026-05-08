@@ -1,5 +1,27 @@
--- game_space.lua port — pure math, no draw calls.
--- project(x, y, z) → (px, py, scale, rot) in 320×240 viewport coords.
+-- game_space.lua port — fake-3D projection math for the depth-gun tunnel.
+-- No draw calls; project(x, y, z) → (px, py, scale, rot) in 320×240 viewport coords.
+--
+-- =====================================================================
+-- COORDINATE / ROTATION CONVENTION (read this when something looks flipped)
+-- =====================================================================
+-- The source game (Love2D) uses +Y down: increasing world y → lower on screen,
+-- positive rotation → CW. Defold's render script uses a standard +Y-up ortho
+-- (as do all OpenGL conventions for sprite UVs), so a naive Y-flipped ortho
+-- would render textures upside down.
+--
+-- Resolution:
+--   * project() keeps source's +Y-down math internally — wobble_y, ytilt,
+--     bend, etc. are unchanged from source.
+--   * The OUTPUT y is flipped at the boundary: ry → VIEWPORT_H - ry. This
+--     converts to Defold's +Y-up screen coords without disturbing source's
+--     math.
+--   * The OUTPUT rot is left in source convention (positive=CW). Callers
+--     (player.script, tunnel.script) negate it once when applying as a
+--     Defold +Y-up quaternion, e.g. `vmath.quat_rotation_z(-rot)`.
+--
+-- If you find yourself negating Y or rotation in MORE than those two places
+-- (project() output y-flip, and per-script quat_rotation_z(-rot)), something
+-- is wrong — don't add a third negation, find the misplaced one.
 
 local Vec2d = require("lovekit.geometry").Vec2d
 local Box   = require("lovekit.geometry").Box

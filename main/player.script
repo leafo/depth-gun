@@ -1,27 +1,37 @@
--- Player ship.
+-- Player ship — full feature set:
+--   Movement (held arrow keys, smooth approach to aim_pos)
+--   Banking (vel_x → space.rot, aim_pos → space.xtilt/ytilt)
+--   Bullets (X press → fire single bullet)
+--   Lock-on missiles (C press → start locking; release → fire all locked)
+--   Lock-on overlay sprites that follow each locked enemy
+--   Cursor scale/rotation effects when locking
 --
 -- Idiomatic Defold input: this script acquires its own input focus and
 -- handles `on_input` directly. Held-state for movement axes is tracked in
--- self.holding_*; tap-style actions (shoot, missile fire) are handled
--- on the press/release event itself.
+-- self.holding_*; tap-style actions fire on the press/release event itself.
 --
--- State is in space-coords (origin at world center). Each frame:
+-- State stored in space-coords (origin at world center). Each frame:
 --   1. Build movement vector from held flags → update aim_pos (clamped).
 --   2. Smooth-approach world position → derive velocity for banking.
 --   3. Write space.rot, space.xtilt, space.ytilt (banking feedback).
 --   4. For each ghost-trail frame, project player world (x, y, frame_z)
 --      and place that frame's GO at the projected screen coords.
+--   5. Lock-on: while held, scan world.entities for in-range enemies;
+--      maintain self.locked + self.lock_on_ids overlays.
+--   6. Cursor: scale/rotate based on locking; place at projected aim_pos.
 
-local Vec2d = require("lovekit.geometry").Vec2d
-local Box   = require("lovekit.geometry").Box
+local Vec2d      = require("lovekit.geometry").Vec2d
+local Box        = require("lovekit.geometry").Box
+local game_state = require("main.scripts.game_state")
 
 local AIM_SPEED   = 200
 local APPROACH_K  = 5
 local MAX_ROT     = 120
 local PLAYER_Z    = -0.1
 local HUD_Z       = 0.3
+local LOCK_RADIUS = 10  -- half-extent of the 20×20 lock-on hitbox in space-coords
+local FIRE_GAP    = 0.1 -- seconds between successive missiles in a barrage
 
--- URLs for sibling GOs that the player controls (placed in main.collection)
 local CURSOR_URL    = msg.url("main:/cursor")
 local CURSOR_SPRITE = msg.url("main:/cursor#sprite")
 local AIM_BOX_URL   = msg.url("main:/aim_box")
@@ -41,7 +51,6 @@ local FRAME_DEPTHS = {
 }
 local FRAME_ANIMS = { "player_0", "player_1", "player_2", "player_3" }
 
--- Action id hashes (computed once at file load).
 local A_LEFT  = hash("left")
 local A_RIGHT = hash("right")
 local A_UP    = hash("up")
@@ -62,6 +71,10 @@ local function get_rotation(vel_x)
     return p * math.pi / 24
 end
 
+-- ---------------------------------------------------------------------------
+-- Lifecycle
+-- ---------------------------------------------------------------------------
+
 function init(self)
     msg.post(".", "acquire_input_focus")
 
@@ -76,6 +89,16 @@ function init(self)
     self.holding_down  = false
     self.locking       = false
 
+    -- Lock-on bookkeeping
+    self.locked       = {}    -- set of enemy entity tables
+    self.lock_on_ids  = {}    -- {[enemy_table] = lock_on go id}
+    self.fire_queue   = {}    -- pending missile targets (in firing order)
+    self.fire_timer   = 0     -- countdown to next missile shot
+
+    -- Cursor visual state
+    self.scale_cursor = 1
+    self.rot_cursor   = 0
+
     -- Spawn 4 ghost-trail frames.
     self.frames = {}
     for i = 1, 4 do
@@ -86,37 +109,141 @@ function init(self)
     end
 end
 
-local function shoot(self)
-    if WORLD and WORLD.spawn_bullet then
-        WORLD.spawn_bullet(self.x, self.y, PLAYER_Z)
-        AUDIO:play("shoot")
+-- ---------------------------------------------------------------------------
+-- Lock-on / missile helpers
+-- ---------------------------------------------------------------------------
+
+local function spawn_lock_on(self, enemy)
+    local id = factory.create("#lock_on_factory")
+    if not id then return false end
+    self.lock_on_ids[enemy] = id
+    return true
+end
+
+local function remove_lock_on(self, enemy)
+    local id = self.lock_on_ids[enemy]
+    if id then
+        go.delete(id)
+        self.lock_on_ids[enemy] = nil
+    end
+    self.locked[enemy] = nil
+end
+
+local function check_lock(self, world)
+    local audio = game_state.get_audio()
+    -- Match source: 20×20 player hitbox tested for overlap with each enemy's
+    -- own (12×8 default) hitbox. Center-to-center distance was too strict.
+    local player_box = Box(self.x - LOCK_RADIUS, self.y - LOCK_RADIUS,
+                           LOCK_RADIUS * 2, LOCK_RADIUS * 2)
+    for i = 1, #world.entities do
+        local e = world.entities[i]
+        if e.is_enemy and e.alive and not e.has_shield and not self.locked[e] then
+            local enemy_box = Box(e.x - e.w / 2, e.y - e.h / 2, e.w, e.h)
+            if player_box:touches_box(enemy_box) then
+                if spawn_lock_on(self, e) then
+                    self.locked[e] = true
+                    audio:play("lock")
+                end
+            end
+        end
     end
 end
 
+local function fire_lock_ons(self)
+    -- Collect locked-and-still-alive targets, then queue them and clear
+    -- the lock_on overlays.
+    local audio = game_state.get_audio()
+    local count = 0
+    for enemy in pairs(self.locked) do
+        if enemy.alive and enemy.z > PLAYER_Z then
+            self.fire_queue[#self.fire_queue + 1] = enemy
+            count = count + 1
+        end
+        remove_lock_on(self, enemy)
+    end
+    if count == 0 then
+        audio:play("notarget")
+        self.scale_cursor = 0.5
+    end
+end
+
+local function shoot_bullet(self, world)
+    if world.spawn_bullet then
+        world.spawn_bullet(self.x, self.y, PLAYER_Z)
+        game_state.get_audio():play("shoot")
+    end
+end
+
+local function shoot_missile(self, world, target)
+    if not target.alive then return end
+    if world.spawn_missile then
+        world.spawn_missile(self.x, self.y, PLAYER_Z, target)
+        game_state.get_audio():play("missile")
+        self.rot_cursor = math.pi
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Input
+-- ---------------------------------------------------------------------------
+
 function on_input(self, action_id, action)
+    local world = game_state.get_world()
     if action.pressed then
-        if action_id == A_LEFT  then self.holding_left  = true
+        if     action_id == A_LEFT  then self.holding_left  = true
         elseif action_id == A_RIGHT then self.holding_right = true
         elseif action_id == A_UP    then self.holding_up    = true
         elseif action_id == A_DOWN  then self.holding_down  = true
-        elseif action_id == A_ONE   then shoot(self)
-        elseif action_id == A_TWO   then self.locking      = true
+        elseif action_id == A_ONE   then shoot_bullet(self, world)
+        elseif action_id == A_TWO   then
+            self.locking = true
+            game_state.get_audio():play("locking")
         end
     elseif action.released then
-        if action_id == A_LEFT  then self.holding_left  = false
+        if     action_id == A_LEFT  then self.holding_left  = false
         elseif action_id == A_RIGHT then self.holding_right = false
         elseif action_id == A_UP    then self.holding_up    = false
         elseif action_id == A_DOWN  then self.holding_down  = false
-        elseif action_id == A_TWO   then self.locking      = false
-            -- M8: fire_lock_ons(self) on release
+        elseif action_id == A_TWO   then
+            self.locking = false
+            fire_lock_ons(self)
         end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Update
+-- ---------------------------------------------------------------------------
+
+local function update_lock_on_overlays(self, world)
+    local space = world.space
+    local rot   = world.time * 4
+    local q     = vmath.quat_rotation_z(rot)
+    -- Iterate snapshot — we may mutate the table when an enemy dies.
+    local to_remove
+    for enemy, id in pairs(self.lock_on_ids) do
+        if not enemy.alive then
+            to_remove = to_remove or {}
+            to_remove[#to_remove + 1] = enemy
+        else
+            -- HUD overlay: position projected, but rendered at natural size
+            -- (matches source) so the indicator stays readable at any enemy z.
+            local px, py = space:project(enemy.x, enemy.y, enemy.z)
+            go.set_position(vmath.vector3(px, py, 25.5), id)
+            go.set_scale(1, id)
+            go.set_rotation(q, id)
+        end
+    end
+    if to_remove then
+        for i = 1, #to_remove do remove_lock_on(self, to_remove[i]) end
     end
 end
 
 function update(self, dt)
-    if not WORLD then return end
+    local world = game_state.get_world()
+    if not world then return end
     self.time = self.time + dt
-    local space = WORLD.space
+    local space = world.space
 
     -- Movement vector from held flags.
     local mvx, mvy = 0, 0
@@ -131,12 +258,11 @@ function update(self, dt)
     self.aim_x = self.aim_x + umx * AIM_SPEED * dt
     self.aim_y = self.aim_y + umy * AIM_SPEED * dt
 
-    -- Clamp aim_pos to space.aim_box.
     local box = space.aim_box
     self.aim_x = clamp(self.aim_x, box.x, box.x + box.w)
     self.aim_y = clamp(self.aim_y, box.y, box.y + box.h)
 
-    -- Smooth-approach world position toward aim_pos.
+    -- Smooth-approach world position.
     local prev_x, prev_y = self.x, self.y
     self.x = smooth_approach(prev_x, self.aim_x, dt * APPROACH_K)
     self.y = smooth_approach(prev_y, self.aim_y, dt * APPROACH_K)
@@ -147,6 +273,25 @@ function update(self, dt)
     space.rot   = get_rotation(self.vel_x)
     space.xtilt = -(self.x / (space.viewport.w * 0.5))
     space.ytilt = -(self.y / (space.viewport.h * 0.5)) * 2
+
+    -- Lock-on scanning while button 2 is held.
+    if self.locking then check_lock(self, world) end
+
+    -- Per-frame fire queue (0.1s gap between missiles in a barrage).
+    if #self.fire_queue > 0 then
+        self.fire_timer = self.fire_timer - dt
+        if self.fire_timer <= 0 then
+            local target = table.remove(self.fire_queue, 1)
+            if target.alive then shoot_missile(self, world, target) end
+            self.fire_timer = FIRE_GAP
+        end
+    end
+
+    -- Cursor visual state
+    local target_size = self.locking and 1.2 or 1
+    self.scale_cursor = smooth_approach(self.scale_cursor, target_size, dt * 2)
+    local target_rot = self.locking and -math.pi / 2 or 0
+    self.rot_cursor = smooth_approach(self.rot_cursor, target_rot, dt * 6)
 
     -- Place each ghost-trail frame.
     local extra_rot = get_rotation(self.vel_x) * 2 - space.world_rot
@@ -163,10 +308,10 @@ function update(self, dt)
     -- Cursor (crosshair) — follows aim_pos in space-coords.
     local cx, cy = space:project(self.aim_x, self.aim_y, HUD_Z)
     go.set_position(vmath.vector3(cx, cy, 25), CURSOR_URL)
+    go.set_scale(self.scale_cursor, CURSOR_URL)
+    go.set_rotation(vmath.quat_rotation_z(self.rot_cursor), CURSOR_URL)
 
-    -- Aim-box outline at a pulsing depth. Source: z = pop_in(t, 2.0) / 4
-    -- with alpha (1 - t) * 128 / 255 ≈ 0..0.5 fade. Creates the rhythmic
-    -- "the box appears, slides in toward camera, fades out" pulse.
+    -- Aim-box outline at a pulsing depth.
     local offset = space.offset
     local t = offset - math.floor(offset)
     local box_z = pop_in(t, 2.0) / 4
@@ -175,10 +320,12 @@ function update(self, dt)
     go.set_position(vmath.vector3(bx, by, 24), AIM_BOX_URL)
     go.set_rotation(vmath.quat_rotation_z(-brot), AIM_BOX_URL)
     go.set_scale(bscale, AIM_BOX_URL)
-    -- Alpha fade across the four edge sprites
     local alpha = (1 - t) * 0.5
     local tint = vmath.vector4(1, 1, 1, alpha)
     for _, part_url in ipairs(AIM_BOX_PARTS) do
         go.set(part_url, "tint", tint)
     end
+
+    -- Lock-on overlays (rotate over time, follow target)
+    update_lock_on_overlays(self, world)
 end

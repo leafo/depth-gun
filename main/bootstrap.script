@@ -1,6 +1,0 @@
--- Runs LAST in the collection. Per-frame controller-state clearing happens
--- here so all entity scripts have already observed `pressed`/`released`.
-
-function update(self, dt)
-    if WORLD then WORLD.time = (WORLD.time or 0) + dt end
-end
