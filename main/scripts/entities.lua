@@ -105,6 +105,14 @@ function Enemy:update_transform(space)
     go.set(self.body_r_url, "tint", tint)
 end
 
+function Enemy:shoot(world, target)
+    if self.dying or not self.alive then return end
+    if not target then return end
+    if not world.spawn_enemy_bullet then return end
+    -- Fire toward target (player). EnemyBullet handles homing in update.
+    world.spawn_enemy_bullet(self.x, self.y, self.z, target)
+end
+
 function M.create_enemy(factory_url, x, y, opts)
     opts = opts or {}
     local id = factory.create(factory_url)
@@ -125,6 +133,75 @@ function M.create_enemy(factory_url, x, y, opts)
         health      = opts.health or ENEMY_DEFAULT_HEALTH,
         flash_time  = 0,
     }, Enemy)
+end
+
+-- Quick "active" check matching the source's e\active! convention:
+-- alive but not in the death animation.
+function Enemy:active() return self.alive and not self.dying end
+
+-- ---------------------------------------------------------------------------
+-- Enemy bullet — fired by enemies, travels toward player z (negative dz),
+-- homes on player x/y. Damages player on overlap.
+-- ---------------------------------------------------------------------------
+
+local EnemyBullet = {}
+EnemyBullet.__index = EnemyBullet
+
+function EnemyBullet:update(dt, world)
+    -- Travel toward camera (decreasing z).
+    self.z = self.z + dt * self.dz
+    if self.z <= -1 then self.alive = false; return false end
+
+    -- Trail particle every 0.05s.
+    self.trail_timer = self.trail_timer - dt
+    if self.trail_timer <= 0 then
+        self.trail_timer = 0.05
+        if world.spawn_smoke then world.spawn_smoke(self.x, self.y, self.z) end
+    end
+
+    -- Home on player x/y in space-coords.
+    local p = world.player
+    if p then
+        self.x = smooth_approach(self.x, p.x, dt * 5)
+        self.y = smooth_approach(self.y, p.y, dt * 5)
+
+        -- Hit detection: same z plane + box overlap.
+        if math.abs(self.z - p.z) < 0.1
+           and math.abs(self.x - p.x) < (p.w + self.w) / 2
+           and math.abs(self.y - p.y) < (p.h + self.h) / 2 then
+            if p.on_hit_by then p:on_hit_by(self, world) end
+            self.alive = false
+            return false
+        end
+    end
+    return true
+end
+
+function EnemyBullet:update_transform(space)
+    local px, py, scale = space:project(self.x, self.y, self.z)
+    go.set_position(vmath.vector3(px, py, 23), self.id)
+    go.set_scale(scale, self.id)
+end
+
+function M.create_enemy_bullet(factory_url, x, y, z, target)
+    local id = factory.create(factory_url)
+    if not id then return nil end
+    -- Source: dz = -scroll_speed * 1.5 ± 0.5. We use a fixed-ish negative.
+    return setmetatable({
+        id           = id,
+        kind         = "enemy_bullet",
+        is_enemy_bullet = true,
+        x            = x,
+        y            = y,
+        z            = z,
+        dz           = -2.5 - math.random() * 1.0,
+        w            = 5,
+        h            = 5,
+        alive        = true,
+        damage       = 1,
+        target       = target,
+        trail_timer  = 0,
+    }, EnemyBullet)
 end
 
 -- ---------------------------------------------------------------------------
@@ -204,6 +281,13 @@ function Particle:update(dt, world)
     self.x  = self.x  + self.vx * dt
     self.y  = self.y  + self.vy * dt
     self.z  = self.z  + self.vz * dt
+    -- Cull particles that cross behind the camera; the projection's
+    -- scale factor goes negative for z <= -1 and Defold rejects negative
+    -- scale on go.set_scale.
+    if self.z <= -1 then
+        self.alive = false
+        return false
+    end
     self.scale = self.scale * (1 + self.dscale * dt)
     self.rot   = self.rot   + self.spin * dt
     return true

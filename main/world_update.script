@@ -19,10 +19,11 @@ local forever_body = require("main.scripts.waves.forever").body
 local _grid = UniformGrid(20)
 
 function init(self)
-    self.bullets_factory   = msg.url("#bullets")
-    self.enemies_factory   = msg.url("#enemies")
-    self.particles_factory = msg.url("#particles")
-    self.missiles_factory  = msg.url("#missiles")
+    self.bullets_factory       = msg.url("#bullets")
+    self.enemies_factory       = msg.url("#enemies")
+    self.particles_factory     = msg.url("#particles")
+    self.missiles_factory      = msg.url("#missiles")
+    self.enemy_bullets_factory = msg.url("#enemy_bullets")
 
     local world = game_state.get_world()
     world.spawn_bullet = function(x, y, z)
@@ -37,6 +38,11 @@ function init(self)
     end
     world.spawn_missile = function(x, y, z, target)
         local e = entities.create_missile(self.missiles_factory, x, y, z, target)
+        world.entities[#world.entities + 1] = e
+        return e
+    end
+    world.spawn_enemy_bullet = function(x, y, z, target)
+        local e = entities.create_enemy_bullet(self.enemy_bullets_factory, x, y, z, target)
         world.entities[#world.entities + 1] = e
         return e
     end
@@ -55,6 +61,16 @@ function init(self)
     -- Default starting wave is the endless forever-mode body. Tutorial slot
     -- (M9 phase C) will replace this when DID_TUTORIAL is false.
     world.set_wave(forever_body)
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("restart_world") then
+        local world = game_state.get_world()
+        game_state.reset_world()
+        world.set_wave(forever_body)
+        -- Tell the player to reset its local state.
+        msg.post("main:/player#script", "restart_player")
+    end
 end
 
 function update(self, dt)

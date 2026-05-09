@@ -1,0 +1,38 @@
+-- Game-over GUI. Hidden by default; player.script posts "show_game_over"
+-- when the player dies. While visible, pressing X (action "one") restarts
+-- the world.
+
+local A_ONE = hash("one")
+
+local function set_visible(self, vis)
+    self.visible = vis
+    for _, n in ipairs(self.root_nodes) do
+        gui.set_enabled(n, vis)
+    end
+end
+
+function init(self)
+    self.root_nodes = {
+        gui.get_node("game_over_label"),
+        gui.get_node("score_label"),
+        gui.get_node("prompt_label"),
+    }
+    set_visible(self, false)
+    msg.post(".", "acquire_input_focus")
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("show_game_over") then
+        local score = (message and message.score) or 0
+        gui.set_text(gui.get_node("score_label"), "score: " .. tostring(math.floor(score)))
+        set_visible(self, true)
+    end
+end
+
+function on_input(self, action_id, action)
+    if not self.visible then return end
+    if action_id == A_ONE and action.pressed then
+        set_visible(self, false)
+        msg.post("main:/world_update#script", "restart_world")
+    end
+end

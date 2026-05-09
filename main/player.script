@@ -24,13 +24,16 @@ local Vec2d      = require("lovekit.geometry").Vec2d
 local Box        = require("lovekit.geometry").Box
 local game_state = require("main.scripts.game_state")
 
-local AIM_SPEED   = 200
-local APPROACH_K  = 5
-local MAX_ROT     = 120
-local PLAYER_Z    = -0.1
-local HUD_Z       = 0.3
-local LOCK_RADIUS = 10  -- half-extent of the 20×20 lock-on hitbox in space-coords
-local FIRE_GAP    = 0.1 -- seconds between successive missiles in a barrage
+local AIM_SPEED      = 200
+local APPROACH_K     = 5
+local MAX_ROT        = 120
+local PLAYER_Z       = -0.1
+local HUD_Z          = 0.3
+local LOCK_RADIUS    = 10  -- half-extent of the 20×20 lock-on hitbox in space-coords
+local FIRE_GAP       = 0.1 -- seconds between successive missiles in a barrage
+local MAX_HEALTH     = 5
+local FLASH_DURATION = 0.2
+local SHAKE_DURATION = 0.3
 
 local CURSOR_URL    = msg.url("main:/cursor")
 local CURSOR_SPRITE = msg.url("main:/cursor#sprite")
@@ -71,6 +74,11 @@ local function get_rotation(vel_x)
     return p * math.pi / 24
 end
 
+-- Forward-declared locals so the closure in init() and the helpers below
+-- can refer to each other without polluting _G.
+local handle_hit
+local explode
+
 -- ---------------------------------------------------------------------------
 -- Lifecycle
 -- ---------------------------------------------------------------------------
@@ -99,6 +107,15 @@ function init(self)
     self.scale_cursor = 1
     self.rot_cursor   = 0
 
+    -- Damage / death state
+    self.health        = MAX_HEALTH
+    self.bullets_fired = 0
+    self.flash_time    = 0
+    self.shake_time    = 0
+    self.shake_rand    = 0
+    self.dying         = false
+    self.dead          = false
+
     -- Spawn 4 ghost-trail frames.
     self.frames = {}
     for i = 1, 4 do
@@ -107,7 +124,69 @@ function init(self)
         sprite.play_flipbook(msg.url(nil, id, "body_r"), hash(FRAME_ANIMS[i] .. "_flipped"))
         self.frames[i] = id
     end
+
+    -- Expose self as world.player so enemies can target/damage us.
+    -- (Enemies pass `world.player` to their shoot routine; EnemyBullet's
+    -- update reads world.player.x/y/z + calls on_hit_by on contact.)
+    local world = game_state.get_world()
+    local script_self = self
+    world.player = {
+        x = 0, y = 0, z = PLAYER_Z,
+        w = 25, h = 8,
+        alive = true,
+        health = MAX_HEALTH,
+        bullets_fired = 0,
+        on_hit_by = function(_, bullet, world)
+            handle_hit(script_self, bullet, world)
+        end,
+    }
 end
+
+handle_hit = function(self, bullet, world)
+    if self.dying or self.dead then return end
+    if math.abs(world.player.z - bullet.z) >= 0.1 then return end
+
+    bullet.alive = false
+    self.health = self.health - (bullet.damage or 1)
+    self.flash_time = FLASH_DURATION
+    self.shake_time = SHAKE_DURATION
+    self.shake_rand = math.random() * math.pi
+    game_state.get_audio():play("player_hit")
+
+    if self.health <= 0 then
+        explode(self, world)
+    end
+end
+
+-- Death sequence — explosions, then show the game-over GUI.
+explode = function(self, world)
+    if self.dying or self.dead then return end
+    self.dying = true
+    game_state.get_audio():play("explode")
+
+    -- Stagger explosions over ~0.5s (matches source).
+    local x, y, z = self.x, self.y, PLAYER_Z
+    if world.spawn_explosion then
+        for i = 1, 5 do
+            local ox = (math.random() * 2 - 1) * 20
+            local oy = (math.random() * 2 - 1) * 4
+            timer.delay(0.1 * (i - 1), false, function()
+                if world.spawn_explosion then
+                    world.spawn_explosion(x + ox, y + oy, z)
+                end
+            end)
+        end
+    end
+
+    -- After explosions, show game-over GUI. Score frozen at death.
+    timer.delay(1.0, false, function()
+        self.dead = true
+        if world.player then world.player.alive = false end
+        msg.post("main:/game_over#gui", "show_game_over", { score = world.score or 0 })
+    end)
+
+    if world.player then world.player.alive = false end
+end -- explode
 
 -- ---------------------------------------------------------------------------
 -- Lock-on / missile helpers
@@ -168,9 +247,14 @@ local function fire_lock_ons(self)
 end
 
 local function shoot_bullet(self, world)
+    if self.dying or self.dead then return end
     if world.spawn_bullet then
         world.spawn_bullet(self.x, self.y, PLAYER_Z)
         game_state.get_audio():play("shoot")
+        self.bullets_fired = self.bullets_fired + 1
+        if world.player then
+            world.player.bullets_fired = self.bullets_fired
+        end
     end
 end
 
@@ -186,6 +270,27 @@ end
 -- ---------------------------------------------------------------------------
 -- Input
 -- ---------------------------------------------------------------------------
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("restart_player") then
+        self.health        = MAX_HEALTH
+        self.bullets_fired = 0
+        self.flash_time    = 0
+        self.shake_time    = 0
+        self.dying         = false
+        self.dead          = false
+        self.x, self.y     = 0, 0
+        self.aim_x, self.aim_y = 0, 0
+        local world = game_state.get_world()
+        if world.player then
+            world.player.health = MAX_HEALTH
+            world.player.alive  = true
+            world.player.x      = 0
+            world.player.y      = 0
+            world.player.bullets_fired = 0
+        end
+    end
+end
 
 function on_input(self, action_id, action)
     local world = game_state.get_world()
@@ -245,6 +350,10 @@ function update(self, dt)
     self.time = self.time + dt
     local space = world.space
 
+    -- Decay flash + shake.
+    if self.flash_time > 0 then self.flash_time = self.flash_time - dt end
+    if self.shake_time > 0 then self.shake_time = self.shake_time - dt end
+
     -- Movement vector from held flags.
     local mvx, mvy = 0, 0
     if self.holding_left  then mvx = mvx - 1 end
@@ -274,6 +383,15 @@ function update(self, dt)
     space.xtilt = -(self.x / (space.viewport.w * 0.5))
     space.ytilt = -(self.y / (space.viewport.h * 0.5)) * 2
 
+    -- Sync world.player view so enemies / EnemyBullet can read live state.
+    if world.player then
+        world.player.x = self.x
+        world.player.y = self.y
+        world.player.z = PLAYER_Z
+        world.player.alive = not self.dead
+        world.player.health = self.health
+    end
+
     -- Lock-on scanning while button 2 is held.
     if self.locking then check_lock(self, world) end
 
@@ -293,6 +411,23 @@ function update(self, dt)
     local target_rot = self.locking and -math.pi / 2 or 0
     self.rot_cursor = smooth_approach(self.rot_cursor, target_rot, dt * 6)
 
+    -- Damage flash tint (red-pulsed when flash_time > 0).
+    local tint
+    if self.flash_time > 0 then
+        tint = vmath.vector4(1.5, 0.4, 0.4, 1)
+    else
+        tint = vmath.vector4(1, 1, 1, 1)
+    end
+
+    -- Damage shake offset (decays toward 0 with random sin/cos).
+    local sx, sy = 0, 0
+    if self.shake_time > 0 then
+        local p = self.shake_time / SHAKE_DURATION  -- 1 → 0 over duration
+        local t = (SHAKE_DURATION - self.shake_time) * 30
+        sx = p * 2 * math.sin(t + self.shake_rand)
+        sy = p * 2 * math.cos(t * 1.1 + self.shake_rand)
+    end
+
     -- Place each ghost-trail frame.
     local extra_rot = get_rotation(self.vel_x) * 2 - space.world_rot
     for i = 1, 4 do
@@ -300,9 +435,12 @@ function update(self, dt)
         local px, py, scale, rot = space:project(self.x, self.y, fz)
         local id = self.frames[i]
         local paint_z = 25 - i
-        go.set_position(vmath.vector3(px, py, paint_z), id)
+        go.set_position(vmath.vector3(px + sx, py + sy, paint_z), id)
         go.set_rotation(vmath.quat_rotation_z(-(rot + extra_rot)), id)
         go.set_scale(scale, id)
+        -- Apply tint to both halves of the ghost frame.
+        go.set(msg.url(nil, id, "body_l"), "tint", tint)
+        go.set(msg.url(nil, id, "body_r"), "tint", tint)
     end
 
     -- Cursor (crosshair) — follows aim_pos in space-coords.

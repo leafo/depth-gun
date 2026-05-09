@@ -15,6 +15,10 @@ components {
   component: "/main/missile.factory"
 }
 components {
+  id: "enemy_bullets"
+  component: "/main/enemy_bullet.factory"
+}
+components {
   id: "script"
   component: "/main/world_update.script"
 }

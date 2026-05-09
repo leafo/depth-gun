@@ -12,7 +12,9 @@ local M = {}
 
 local BG_OPTS_BASE = { hole = 1, hole2 = 1, hair = 1 }
 
--- Spawn `count` enemies in random aim_box positions and let them wander.
+-- Spawn `count` enemies in random aim_box positions and let them act.
+-- Each enemy independently picks among move/shoot/idle each cycle, weighted
+-- by difficulty (more shooting at higher difficulty).
 local function spawn_random_burst(wave, world, count)
     local fns = {}
     for _ = 1, count do
@@ -21,13 +23,23 @@ local function spawn_random_burst(wave, world, count)
             local x, y = world.space.aim_box:random_point()
             local e = wave:add_enemy(x, y)
             wait(rand(0.8, 1.5))
-            if e and e.alive and not e.dying then
+            if e and e:active() then
                 ent.move_to_z(e, rand(0.6, 0.9))
             end
-            while e and e.alive and not e.dying do
-                if chance(0.3) then
+            while e and e:active() do
+                local action = pick_dist({
+                    nothing = 5,
+                    move    = 1,
+                    shoot   = 1 * wave.difficulty,
+                })
+                if action == "move" then
                     local nx, ny = world.space.aim_box:random_point()
                     ent.move_to(e, nx, ny)
+                elseif action == "shoot" then
+                    wait(rand(0.8, 1.2))
+                    if e and e:active() and world.player and world.player.alive then
+                        e:shoot(world, world.player)
+                    end
                 else
                     wait(rand(2.0, 2.5))
                 end

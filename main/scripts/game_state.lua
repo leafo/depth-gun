@@ -38,9 +38,35 @@ function M.get_config() return _config end
 function M.get_audio()  return _audio end
 function M.get_world()  return _world end
 
+-- Reset gameplay-mutable fields on the existing world table without
+-- replacing it. Spawn helpers and the player view stay intact (they were
+-- registered by world_update / player at init, and the table identity
+-- is preserved).
 function M.reset_world()
-    _world = world_module.create()
-    return _world
+    if not _world then return end
+    -- Despawn any live entities so factory.create count goes back down.
+    for i = 1, #(_world.entities or {}) do
+        local e = _world.entities[i]
+        if e and e.id then go.delete(e.id) end
+    end
+    _world.entities    = {}
+    _world.particles   = {}
+    _world.score       = 0
+    _world.score_mult  = 1
+    _world.time        = 0
+    _world.tunnel_alpha = 1
+    _world.wave        = nil
+    -- Reset GameSpace's stateful fields.
+    if _world.space then
+        _world.space.scroll_speed   = 2
+        _world.space.rot            = 0
+        _world.space.world_rot      = 0
+        _world.space.xtilt          = 0
+        _world.space.ytilt          = 0
+        _world.space.tunnel_dir_x   = 0
+        _world.space.tunnel_dir_y   = 0
+        _world.space.offset         = 0
+    end
 end
 
 return M

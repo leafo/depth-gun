@@ -1,0 +1,37 @@
+-- HUD script — reads world state each frame and updates the GUI labels.
+
+local game_state = require("main.scripts.game_state")
+
+local SPHINCTER_STAGES = {
+    [5] = "sphincter: nominal",
+    [4] = "sphincter: tight",
+    [3] = "sphincter: stressed",
+    [2] = "sphincter: panicked",
+    [1] = "sphincter: critical",
+    [0] = "sphincter: ruptured",
+}
+
+local HEALTH_BAR_WIDTH = 180
+
+function init(self)
+    self.score_node       = gui.get_node("score_label")
+    self.mult_node        = gui.get_node("mult_label")
+    self.status_node      = gui.get_node("status_label")
+    self.health_fill_node = gui.get_node("health_fill")
+end
+
+function update(self, dt)
+    local world = game_state.get_world()
+    if not world then return end
+
+    gui.set_text(self.score_node, "score: " .. tostring(math.floor(world.score or 0)))
+    gui.set_text(self.mult_node, "x" .. tostring(world.score_mult or 1))
+
+    if world.player then
+        local h = math.max(0, world.player.health or 0)
+        gui.set_text(self.status_node, SPHINCTER_STAGES[h] or "sphincter: ruptured")
+        local size = gui.get_size(self.health_fill_node)
+        local frac = h / 5
+        gui.set_size(self.health_fill_node, vmath.vector3(HEALTH_BAR_WIDTH * frac, size.y, size.z))
+    end
+end

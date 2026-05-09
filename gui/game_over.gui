@@ -1,0 +1,88 @@
+script: "/gui/game_over.gui_script"
+fonts {
+  name: "system_font"
+  font: "/fonts/font.font"
+}
+nodes {
+  position {
+    x: 480.0
+    y: 360.0
+    z: 0.0
+    w: 1.0
+  }
+  rotation { x: 0 y: 0 z: 0 w: 1 }
+  scale { x: 4 y: 4 z: 1 w: 1 }
+  size {
+    x: 200.0
+    y: 24.0
+    z: 0.0
+    w: 1.0
+  }
+  color {
+    x: 1.0
+    y: 0.5
+    z: 0.5
+    w: 1.0
+  }
+  type: TYPE_TEXT
+  text: "game over"
+  font: "system_font"
+  id: "game_over_label"
+  pivot: PIVOT_CENTER
+}
+nodes {
+  position {
+    x: 480.0
+    y: 290.0
+    z: 0.0
+    w: 1.0
+  }
+  rotation { x: 0 y: 0 z: 0 w: 1 }
+  scale { x: 2 y: 2 z: 1 w: 1 }
+  size {
+    x: 200.0
+    y: 24.0
+    z: 0.0
+    w: 1.0
+  }
+  color {
+    x: 1.0
+    y: 1.0
+    z: 1.0
+    w: 1.0
+  }
+  type: TYPE_TEXT
+  text: "score: 0"
+  font: "system_font"
+  id: "score_label"
+  pivot: PIVOT_CENTER
+}
+nodes {
+  position {
+    x: 480.0
+    y: 200.0
+    z: 0.0
+    w: 1.0
+  }
+  rotation { x: 0 y: 0 z: 0 w: 1 }
+  scale { x: 1.5 y: 1.5 z: 1 w: 1 }
+  size {
+    x: 400.0
+    y: 24.0
+    z: 0.0
+    w: 1.0
+  }
+  color {
+    x: 1.0
+    y: 1.0
+    z: 1.0
+    w: 1.0
+  }
+  type: TYPE_TEXT
+  text: "press x to restart"
+  font: "system_font"
+  id: "prompt_label"
+  pivot: PIVOT_CENTER
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_DISABLED

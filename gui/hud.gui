@@ -1,0 +1,149 @@
+script: "/gui/hud.gui_script"
+fonts {
+  name: "system_font"
+  font: "/fonts/font.font"
+}
+nodes {
+  position {
+    x: 20.0
+    y: 700.0
+    z: 0.0
+    w: 1.0
+  }
+  rotation { x: 0 y: 0 z: 0 w: 1 }
+  scale { x: 1 y: 1 z: 1 w: 1 }
+  size {
+    x: 200.0
+    y: 24.0
+    z: 0.0
+    w: 1.0
+  }
+  color {
+    x: 1.0
+    y: 1.0
+    z: 1.0
+    w: 1.0
+  }
+  type: TYPE_TEXT
+  text: "score: 0"
+  font: "system_font"
+  id: "score_label"
+  pivot: PIVOT_NW
+  outline {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
+  }
+  shadow {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
+  }
+}
+nodes {
+  position {
+    x: 20.0
+    y: 670.0
+    z: 0.0
+    w: 1.0
+  }
+  rotation { x: 0 y: 0 z: 0 w: 1 }
+  scale { x: 1 y: 1 z: 1 w: 1 }
+  size {
+    x: 200.0
+    y: 24.0
+    z: 0.0
+    w: 1.0
+  }
+  color {
+    x: 1.0
+    y: 1.0
+    z: 1.0
+    w: 1.0
+  }
+  type: TYPE_TEXT
+  text: "x1"
+  font: "system_font"
+  id: "mult_label"
+  pivot: PIVOT_NW
+  outline {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
+  }
+  shadow {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
+  }
+}
+nodes {
+  position {
+    x: 760.0
+    y: 700.0
+    z: 0.0
+    w: 1.0
+  }
+  rotation { x: 0 y: 0 z: 0 w: 1 }
+  scale { x: 1 y: 1 z: 1 w: 1 }
+  size {
+    x: 180.0
+    y: 24.0
+    z: 0.0
+    w: 1.0
+  }
+  color {
+    x: 1.0
+    y: 1.0
+    z: 1.0
+    w: 1.0
+  }
+  type: TYPE_TEXT
+  text: "sphincter: nominal"
+  font: "system_font"
+  id: "status_label"
+  pivot: PIVOT_NW
+  outline {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
+  }
+  shadow {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
+  }
+}
+nodes {
+  position {
+    x: 760.0
+    y: 660.0
+    z: 0.0
+    w: 1.0
+  }
+  rotation { x: 0 y: 0 z: 0 w: 1 }
+  scale { x: 1 y: 1 z: 1 w: 1 }
+  size {
+    x: 180.0
+    y: 16.0
+    z: 0.0
+    w: 1.0
+  }
+  color {
+    x: 1.0
+    y: 0.4
+    z: 0.4
+    w: 1.0
+  }
+  type: TYPE_BOX
+  id: "health_fill"
+  pivot: PIVOT_NW
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_DISABLED

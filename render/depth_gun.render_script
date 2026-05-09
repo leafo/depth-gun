@@ -87,9 +87,12 @@ function update(self)
     render.draw(self.upscale_pred)
     render.disable_texture("world_sampler")
 
-    -- Pass 3: GUI on top (HUD, fades, tutorial reveal)
+    -- Pass 3: GUI on top (HUD, fades, tutorial reveal). Use framebuffer dims
+    -- (matching Defold's default render script) so GUI's internal layout
+    -- engine produces the same coords it would with the stock pipeline.
+    render.set_viewport(0, 0, fb_w, fb_h)
     render.set_view(vmath.matrix4())
-    render.set_projection(vmath.matrix4_orthographic(0, logical_w, 0, logical_h, -1, 1))
+    render.set_projection(vmath.matrix4_orthographic(0, fb_w, 0, fb_h, -1, 1))
     render.draw(self.gui_pred)
 end
 
